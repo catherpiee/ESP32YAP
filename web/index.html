@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Custom Text">
+<title>Custom Text</title>
+<style>
+  @font-face { font-family: "Archivo Black"; src: url("fonts/Archivo-Black-latin.ttf"); }
+  :root {
+    --bg: #0B0B0C; --panel: #18181A; --line: #2E2E33; --text: #F4F4F5; --muted: #A1A1AA; --pick: #F8B400;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0 auto; max-width: 520px; background: var(--bg); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    padding: calc(16px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 40px max(16px, env(safe-area-inset-left, 0px));
+  }
+  .stage { position: sticky; top: 0; background: var(--bg); padding-bottom: 12px; z-index: 2; }
+  canvas { display: block; width: 100%; aspect-ratio: 320 / 170; border-radius: 10px; box-shadow: 0 0 0 3px #2a2a2e; background: #000; }
+  .note { color: var(--muted); font-size: 13px; margin: 8px 0 0; display: flex; justify-content: space-between; gap: 8px; }
+  h2 { font-size: 15px; margin: 24px 0 10px; }
+  h2 small { color: var(--muted); font-weight: 400; }
+  .field { display: flex; gap: 8px; }
+  input[type=text] { flex: 1; min-width: 0; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 12px; font: inherit; font-size: 16px; }
+  .go { font: inherit; font-weight: 700; background: var(--pick); color: #111; border: 0; border-radius: 10px; padding: 0 18px; min-height: 48px; }
+  .swatches { display: flex; flex-wrap: wrap; gap: 10px; }
+  .swatches button, .swatches label { width: 48px; height: 48px; border-radius: 50%; border: 3px solid var(--line); padding: 0; position: relative; overflow: hidden; cursor: pointer; }
+  .swatches .on { border-color: var(--pick); box-shadow: 0 0 0 2px var(--pick); }
+  .swatches label { display: grid; place-items: center; background: conic-gradient(red, orange, yellow, lime, cyan, blue, magenta, red); font-size: 11px; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000; }
+  .swatches input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; }
+  .seg { display: flex; gap: 8px; }
+  .seg button { flex: 1; font: inherit; font-size: 15px; font-weight: 600; color: var(--text); background: var(--panel); border: 2px solid transparent; border-radius: 10px; min-height: 48px; }
+  .seg button.on { border-color: var(--pick); }
+  #toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: #B42318; color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <canvas id="screen" width="640" height="340" aria-label="Preview of the screen"></canvas>
+  <p class="note"><span>On your screen now</span><span id="mode"></span></p>
+</div>
+
+<h2>Edit text <small>type &lt;3 or ❤️ for a heart</small></h2>
+<div class="field">
+  <input type="text" id="text" autocomplete="off" enterkeyhint="send" aria-label="Edit text">
+  <button class="go" id="show">Show</button>
+</div>
+
+<h2>Background</h2>
+<div class="swatches" id="swatches">
+  <button data-bg="#000000" style="background:#000000" aria-label="Black"></button>
+  <button data-bg="#8A2BE2" style="background:#8A2BE2" aria-label="Purple"></button>
+  <button data-bg="#FF8DC4" style="background:#FF8DC4" aria-label="Pink"></button>
+  <button data-bg="#FF2E93" style="background:#FF2E93" aria-label="Hot pink"></button>
+  <button data-bg="#00D8E6" style="background:#00D8E6" aria-label="Cyan"></button>
+  <button data-bg="#A97CF8" style="background:#A97CF8" aria-label="Lavender"></button>
+  <button data-bg="#2F7BFF" style="background:#2F7BFF" aria-label="Blue"></button>
+  <label aria-label="Any colour"><input type="color" id="pick" value="#2bb673">Any</label>
+</div>
+
+<h2>Decoration</h2>
+<div class="seg" id="deco">
+  <button data-deco="stars">Stars</button>
+  <button data-deco="cat">Cat logo</button>
+  <button data-deco="none">Nothing</button>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+// Opened from the board itself, or anywhere else as a demo that talks to nothing.
+const DEMO = location.hostname !== "192.168.4.1";
+let state = { text: "hello <3", background: "#000000", decoration: "stars" };
+let changedAt = performance.now();
+
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 3500); }
+
+async function send(patch) {
+  if ("text" in patch && patch.text !== state.text) changedAt = performance.now();
+  if (DEMO) { state = { ...state, ...patch }; render(); return; }
+  try {
+    const r = await fetch("/api/state", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+    state = await r.json(); render();
+  } catch (e) { toast("Can't reach the screen. Is your phone on its Wi-Fi?"); }
+}
+async function load() {
+  if (DEMO) return render();
+  try { state = await (await fetch("/api/state")).json(); render(); }
+  catch (e) { toast("Can't reach the screen. Is your phone on its Wi-Fi?"); }
+}
+
+function render() {
+  if (document.activeElement !== $("text")) $("text").value = state.text;
+  let matched = false;
+  for (const b of document.querySelectorAll("#swatches button")) { const on = b.dataset.bg.toLowerCase() === state.background.toLowerCase(); b.classList.toggle("on", on); matched ||= on; }
+  document.querySelector("#swatches label").classList.toggle("on", !matched);
+  for (const b of document.querySelectorAll("#deco button")) b.classList.toggle("on", b.dataset.deco === state.decoration);
+  $("mode").textContent = DEMO ? "Demo, not connected" : "Connected";
+}
+
+// ---------- preview: the same layout the board draws (320 x 170, shown at 2x) ----------
+const ctx = $("screen").getContext("2d");
+const STARS = [[14,12,28,.2],[92,6,22,-.3],[196,14,18,.1],[252,8,14,-.2],[300,62,12,.3],[280,132,26,-.1],[168,148,16,.25],[60,140,20,-.15],[8,96,10,.05]];
+function inkFor(hex) { const n = parseInt(hex.slice(1), 16); return ((n >> 16) & 255) * 3 + ((n >> 8) & 255) * 6 + (n & 255) > 2000 ? "#000" : "#fff"; }
+function star(x, y, s, rot) {
+  ctx.beginPath();
+  for (let j = 0; j < 10; j++) {
+    const r = j % 2 ? s / 2 * .45 : s / 2, a = -Math.PI / 2 + rot + j * Math.PI / 5;
+    ctx.lineTo(x + s / 2 + r * Math.cos(a), y + s / 2 + .06 * s + r * Math.sin(a));
+  }
+  ctx.fill();
+}
+function heart(x, y, s) {
+  ctx.beginPath();
+  ctx.moveTo(x + s / 2, y + s * .92);
+  ctx.bezierCurveTo(x - s * .05, y + s * .5, x + s * .05, y + s * .05, x + s / 2, y + s * .3);
+  ctx.bezierCurveTo(x + s * .95, y + s * .05, x + s * 1.05, y + s * .5, x + s / 2, y + s * .92);
+  ctx.fill();
+}
+function cat(x, y, h) {  // the grumpy cat logo, from its 400-unit drawing
+  const k = h / 230, P = (px, py) => [x + (px + 10 - 50) * k, y + (py - 6 - 90) * k];
+  ctx.lineWidth = 20 * k; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (const line of [[[100,152],[108,104],[150,128]], [[244,128],[290,116],[292,160]], [[104,183],[160,190]], [[236,187],[288,187]], [[168,268],[198,214],[234,266]]]) {
+    ctx.beginPath(); line.forEach((p, i) => ctx[i ? "lineTo" : "moveTo"](...P(...p))); ctx.stroke();
+  }
+  const [cx, cy] = P(190, 218);
+  ctx.beginPath(); ctx.ellipse(cx, cy, 132 * k, 96 * k, 0, 0, Math.PI * 2); ctx.stroke();
+}
+// Text as pieces: words and hearts, measured once per frame.
+function pieces(t) { return t.replace(/❤️?/g, "<3").split(/(<3)/).filter(Boolean); }
+function textWidth(ps) { return ps.reduce((w, p) => w + (p === "<3" ? 52 : ctx.measureText(p).width), 0); }
+function drawText(ps, x, base) { for (const p of ps) { if (p === "<3") { heart(x + 4, base - 21 - 22, 44); x += 52; } else { ctx.fillText(p, x, base); x += ctx.measureText(p).width; } } }
+
+function frame(now) {
+  ctx.setTransform(2, 0, 0, 2, 0, 0);
+  ctx.fillStyle = state.background; ctx.fillRect(0, 0, 320, 170);
+  const ink = inkFor(state.background);
+  ctx.fillStyle = ink; ctx.strokeStyle = ink;
+  if (state.decoration === "stars") for (const [x, y, s, r] of STARS) star(x, y, s, r);
+  ctx.font = '60px "Archivo Black", Arial Black, sans-serif'; ctx.textBaseline = "alphabetic";
+  const ps = pieces(state.text), w = textWidth(ps), base = (170 + 42) / 2;
+  if (w <= 288) drawText(ps, (320 - w) / 2, base);
+  else {
+    const period = w + 56, off = ((now - changedAt) / 1000 * 60) % period;
+    for (let x = 16 - off - period; x < 320; x += period) drawText(ps, x, base);
+  }
+  if (state.decoration === "cat") cat(320 - 35 - 8, 170 - 28 - 6, 30);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+const showText = () => { send({ text: $("text").value }); $("text").blur(); };
+$("show").onclick = showText;
+$("text").onkeydown = e => { if (e.key === "Enter") showText(); };
+for (const b of document.querySelectorAll("#swatches button")) b.onclick = () => send({ background: b.dataset.bg });
+$("pick").oninput = e => { clearTimeout($("pick").t); $("pick").t = setTimeout(() => send({ background: e.target.value }), 150); };
+for (const b of document.querySelectorAll("#deco button")) b.onclick = () => send({ decoration: b.dataset.deco });
+document.fonts && document.fonts.load('60px "Archivo Black"');
+load();
+</script>
+</body>
+</html>
